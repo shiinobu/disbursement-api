@@ -69,16 +69,26 @@ func (h *DisbursementHandler) MountRoutes(router *gin.RouterGroup) {
 }
 
 func (h *DisbursementHandler) List(c *gin.Context) {
-	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
+	page, pageErr := strconv.Atoi(c.DefaultQuery("page", "1"))
+	limit, limitErr := strconv.Atoi(c.DefaultQuery("limit", "10"))
 	search := c.Query("search")
 	status := c.Query("status")
+
+	if pageErr != nil || limitErr != nil {
+		Error(c, http.StatusBadRequest, "Request tidak valid", gin.H{
+			"page":  "page dan limit harus berupa angka positif",
+			"limit": "page dan limit harus berupa angka positif",
+		})
+		return
+	}
 
 	result, err := h.disbursements.List(page, limit, search, status)
 	if err != nil {
 		switch {
 		case errors.Is(err, services.ErrInvalidDisbursementStatus):
 			Error(c, http.StatusBadRequest, "Request tidak valid", gin.H{"status": "status disbursement tidak valid"})
+		case errors.Is(err, services.ErrInvalidPagination):
+			Error(c, http.StatusBadRequest, "Request tidak valid", gin.H{"page": "page dan limit harus berupa angka positif", "limit": "page dan limit harus berupa angka positif"})
 		default:
 			Error(c, http.StatusInternalServerError, "Gagal mengambil data disbursement", nil)
 		}
@@ -133,7 +143,6 @@ func (h *DisbursementHandler) Create(c *gin.Context) {
 	} else {
 		Success(c, http.StatusCreated, "Disbursement berhasil dibuat", disbursement)
 	}
-
 }
 
 func (h *DisbursementHandler) Detail(c *gin.Context) {
@@ -207,7 +216,6 @@ func (h *DisbursementHandler) Delete(c *gin.Context) {
 }
 
 func (h *DisbursementHandler) Export(c *gin.Context) {
-
 	status := c.Query("status")
 
 	disbursements, err := h.disbursements.Export(status)
