@@ -18,6 +18,17 @@ type stubDisbursementRepo struct {
 
 	findAllErr error
 	exportErr  error
+
+	updatePendingStatusCalled bool
+	updatePendingStatusID     uint
+	updatePendingStatusUserID uint
+	updatePendingStatus       string
+	updatePendingStatusReason *string
+	updatePendingStatusResult bool
+	updatePendingStatusErr    error
+
+	detailResult *models.Disbursement
+	detailErr    error
 }
 
 func (s *stubDisbursementRepo) Create(disbursement *models.Disbursement) error {
@@ -34,11 +45,24 @@ func (s *stubDisbursementRepo) FindAll(page, limit int, search, status string) (
 }
 
 func (s *stubDisbursementRepo) FindByID(id uint) (*models.Disbursement, error) {
-	return nil, errors.New("not implemented")
+	if s.detailErr != nil {
+		return nil, s.detailErr
+	}
+	return s.detailResult, nil
 }
 
 func (s *stubDisbursementRepo) Update(disbursement *models.Disbursement) error {
 	return errors.New("not implemented")
+}
+
+func (s *stubDisbursementRepo) UpdatePendingStatus(id, userID uint, status string, rejectionReason *string) (bool, error) {
+	s.updatePendingStatusCalled = true
+	s.updatePendingStatusID = id
+	s.updatePendingStatusUserID = userID
+	s.updatePendingStatus = status
+	s.updatePendingStatusReason = rejectionReason
+
+	return s.updatePendingStatusResult, s.updatePendingStatusErr
 }
 
 func (s *stubDisbursementRepo) Delete(id uint) error {
@@ -71,6 +95,29 @@ func TestDisbursementServiceListFiltersByStatus(t *testing.T) {
 	}
 }
 
+func TestDisbursementServiceListRejectsInvalidPagination(t *testing.T) {
+	repo := &stubDisbursementRepo{}
+	service := NewDisbursementService(repo)
+
+	for _, test := range []struct {
+		name  string
+		page  int
+		limit int
+	}{
+		{name: "zero page", page: 0, limit: 10},
+		{name: "negative page", page: -1, limit: 10},
+		{name: "zero limit", page: 1, limit: 0},
+		{name: "negative limit", page: 1, limit: -10},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := service.List(test.page, test.limit, "", "")
+			if !errors.Is(err, ErrInvalidPagination) {
+				t.Fatalf("expected ErrInvalidPagination, got %v", err)
+			}
+		})
+	}
+}
+
 func TestDisbursementServiceListRejectsInvalidStatus(t *testing.T) {
 	repo := &stubDisbursementRepo{}
 	service := NewDisbursementService(repo)
@@ -88,5 +135,38 @@ func TestDisbursementServiceExportRejectsInvalidStatus(t *testing.T) {
 	_, err := service.Export("INVALID")
 	if !errors.Is(err, ErrInvalidDisbursementStatus) {
 		t.Fatalf("expected ErrInvalidDisbursementStatus, got %v", err)
+	}
+}
+
+func TestDisbursementServiceUpdateStatusUsesAtomicPendingTransition(t *testing.T) {
+	repo := &stubDisbursementRepo{
+		updatePendingStatusResult: true,
+		detailResult: &models.Disbursement{
+			ID:     10,
+			Status: models.StatusApproved,
+		},
+	}
+
+	service := NewDisbursementService(repo)
+
+	result, err := service.UpdateStatus(10, 7, "ADMIN", string(models.StatusApproved), "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !repo.updatePendingStatusCalled {
+		t.Fatal("expected UpdatePendingStatus to be called")
+	}
+	if repo.updatePendingStatusID != 10 || repo.updatePendingStatusUserID != 7 {
+		t.Fatalf("unexpected update identifiers: id=%d userID=%d", repo.updatePendingStatusID, repo.updatePendingStatusUserID)
+	}
+	if repo.updatePendingStatus != string(models.StatusApproved) {
+		t.Fatalf("status = %q, want APPROVED", repo.updatePendingStatus)
+	}
+	if repo.updatePendingStatusReason != nil {
+		t.Fatal("expected nil rejection reason for approval")
+	}
+	if result.Status != models.StatusApproved {
+		t.Fatalf("result status = %q, want APPROVED", result.Status)
 	}
 }
