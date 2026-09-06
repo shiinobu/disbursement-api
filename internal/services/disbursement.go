@@ -2,11 +2,11 @@ package services
 
 import (
 	"errors"
+	"math"
 	"strings"
 
 	"gorm.io/gorm"
 
-	"math"
 	"rest-api-disbursement-system/internal/models"
 	"rest-api-disbursement-system/internal/repository"
 )
@@ -15,9 +15,10 @@ var (
 	ErrDisbursementNotFound         = errors.New("disbursement tidak ditemukan")
 	ErrDisbursementAlreadyProcessed = errors.New("disbursement sudah diproses")
 	ErrDisbursementAmountTooLow     = errors.New("jumlah disbursement harus lebih dari 10.000")
-	ErrInvalidDisbursementStatus    = errors.New("status disbursement tidak valid")
+	ErrInvalidDisbursementStatus    = errors.New("disbursement status tidak valid")
 	ErrForbidden                    = errors.New("forbidden")
 	ErrDisbursementCannotBeDeleted  = errors.New("disbursement tidak dapat dihapus")
+	ErrInvalidPagination            = errors.New("pagination tidak valid")
 )
 
 type DisbursementService interface {
@@ -98,12 +99,15 @@ func validateDisbursementStatus(status string) error {
 }
 
 func (s *disbursementService) List(page, limit int, search, status string) (*DisbursementListResult, error) {
+	if page < 1 || limit < 1 {
+		return nil, ErrInvalidPagination
+	}
+
 	if err := validateDisbursementStatus(status); err != nil {
 		return nil, err
 	}
 
 	data, total, err := s.disbursements.FindAll(page, limit, search, status)
-
 	if err != nil {
 		return nil, err
 	}
@@ -136,30 +140,29 @@ func (s *disbursementService) UpdateStatus(id, userID uint, role, status, note s
 		return nil, ErrForbidden
 	}
 
-	disbursement, err := s.Detail(id)
+	if err := validateDisbursementStatus(status); err != nil || status == "" || status == string(models.StatusPending) {
+		return nil, ErrInvalidDisbursementStatus
+	}
+
+	var rejectionReason *string
+	if status == string(models.StatusRejected) {
+		rejectionReason = &note
+	}
+
+	updated, err := s.disbursements.UpdatePendingStatus(id, userID, status, rejectionReason)
 	if err != nil {
 		return nil, err
 	}
 
-	if disbursement.Status != models.StatusPending {
+	if !updated {
+		disbursement, detailErr := s.Detail(id)
+		if detailErr != nil {
+			return nil, detailErr
+		}
+		if disbursement.Status != models.StatusPending {
+			return nil, ErrDisbursementAlreadyProcessed
+		}
 		return nil, ErrDisbursementAlreadyProcessed
-	}
-
-	switch status {
-	case string(models.StatusApproved):
-		disbursement.Status = models.StatusApproved
-		disbursement.ProcessedByID = &userID
-		disbursement.RejectionReason = nil
-	case string(models.StatusRejected):
-		disbursement.Status = models.StatusRejected
-		disbursement.ProcessedByID = &userID
-		disbursement.RejectionReason = &note
-	default:
-		return nil, ErrInvalidDisbursementStatus
-	}
-
-	if err := s.disbursements.Update(disbursement); err != nil {
-		return nil, err
 	}
 
 	return s.Detail(id)
